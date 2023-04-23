@@ -23,6 +23,7 @@
 
 #ifdef __cplusplus
 #include "nvmath/nvmath.h"
+#include <stdint.h> /* for uint64_t */
 // GLSL Type
 using vec2 = nvmath::vec2f;
 using vec3 = nvmath::vec3f;
@@ -41,25 +42,27 @@ using uint = unsigned int;
 #endif
 
 START_BINDING(SceneBindings)
-  eGlobals  = 0,  // Global uniform containing camera matrices
-  eObjDescs = 1,  // Access to the object descriptions
-  eTextures = 2   // Access to textures
+  eGlobals   = 0,  // Global uniform containing camera matrices
+  eSceneDesc = 1,  // Access to the scene buffers
+  eTextures  = 2   // Access to textures
 END_BINDING();
 
 START_BINDING(RtxBindings)
-  eTlas     = 0,  // Top-level acceleration structure
-  eOutImage = 1   // Ray tracer output image
+  eTlas       = 0,  // Top-level acceleration structure
+  eOutImage   = 1,  // Ray tracer output image
+  ePrimLookup = 2   // Lookup of objects
 END_BINDING();
 // clang-format on
 
-// Information of a obj model when referenced in a shader
-struct ObjDesc
+// Scene buffer addresses
+struct SceneDesc
 {
-  int      txtOffset;             // Texture index offset in the array of textures
-  uint64_t vertexAddress;         // Address of the Vertex buffer
-  uint64_t indexAddress;          // Address of the index buffer
-  uint64_t materialAddress;       // Address of the material buffer
-  uint64_t materialIndexAddress;  // Address of the triangle material index buffer
+  uint64_t vertexAddress;    // Address of the Vertex buffer
+  uint64_t normalAddress;    // Address of the Normal buffer
+  uint64_t uvAddress;        // Address of the texture coordinates buffer
+  uint64_t indexAddress;     // Address of the triangle indices buffer
+  uint64_t materialAddress;  // Address of the Materials buffer (GltfShadeMaterial)
+  uint64_t primInfoAddress;  // Address of the mesh primitives buffer (PrimMeshInfo)
 };
 
 // Uniform buffer set at each frame
@@ -78,6 +81,7 @@ struct PushConstantRaster
   uint  objIndex;
   float lightIntensity;
   int   lightType;
+  int   materialId;
 };
 
 
@@ -88,29 +92,22 @@ struct PushConstantRay
   vec3  lightPosition;
   float lightIntensity;
   int   lightType;
+  int   frame;
 };
 
-struct Vertex  // See ObjLoader, copy of VertexObj, could be compressed for device
+// Structure used for retrieving the primitive information in the closest hit
+struct PrimMeshInfo
 {
-  vec3 pos;
-  vec3 nrm;
-  vec3 color;
-  vec2 texCoord;
+  uint indexOffset;
+  uint vertexOffset;
+  int  materialIndex;
 };
 
-struct WaveFrontMaterial  // See ObjLoader, copy of MaterialObj, could be compressed for device
+struct GltfShadeMaterial
 {
-  vec3  ambient;
-  vec3  diffuse;
-  vec3  specular;
-  vec3  transmittance;
-  vec3  emission;
-  float shininess;
-  float ior;       // index of refraction
-  float dissolve;  // 1 == opaque; 0 == fully transparent
-  int   illum;     // illumination model (see http://www.fileformat.info/format/material/)
-  int   textureId;
+  vec4 pbrBaseColorFactor;
+  vec3 emissiveFactor;
+  int  pbrBaseColorTexture;
 };
-
 
 #endif

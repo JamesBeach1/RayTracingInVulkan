@@ -19,13 +19,18 @@
 
 #pragma once
 
+#include "shaders/host_device.h"
+
 #include "nvvkhl/appbase_vk.hpp"
 #include "nvvk/debug_util_vk.hpp"
 #include "nvvk/descriptorsets_vk.hpp"
 #include "nvvk/memallocator_dma_vk.hpp"
 #include "nvvk/resourceallocator_vk.hpp"
-#include "shaders/host_device.h"
+
+// #VKRay
+#include "nvh/gltfscene.hpp"
 #include "nvvk/raytraceKHR_vk.hpp"
+#include "nvvk/sbtwrapper_vk.hpp"
 
 //--------------------------------------------------------------------------------------------------
 // Simple rasterizer of OBJ objects
@@ -40,48 +45,34 @@ public:
   void setup(const VkInstance& instance, const VkDevice& device, const VkPhysicalDevice& physicalDevice, uint32_t queueFamily) override;
   void createDescriptorSetLayout();
   void createGraphicsPipeline();
-  void loadModel(const std::string& filename, nvmath::mat4f transform = nvmath::mat4f(1));
+  void loadScene(const std::string& filename);
   void updateDescriptorSet();
   void createUniformBuffer();
-  void createObjDescriptionBuffer();
-  void createTextureImages(const VkCommandBuffer& cmdBuf, const std::vector<std::string>& textures);
+  void createTextureImages(const VkCommandBuffer& cmdBuf, tinygltf::Model& gltfModel);
   void updateUniformBuffer(const VkCommandBuffer& cmdBuf);
   void onResize(int /*w*/, int /*h*/) override;
   void destroyResources();
   void rasterize(const VkCommandBuffer& cmdBuff);
 
-  // The OBJ model
-  struct ObjModel
-  {
-    uint32_t     nbIndices{0};
-    uint32_t     nbVertices{0};
-    nvvk::Buffer vertexBuffer;    // Device buffer of all 'Vertex'
-    nvvk::Buffer indexBuffer;     // Device buffer of the indices forming triangles
-    nvvk::Buffer matColorBuffer;  // Device buffer of array of 'Wavefront material'
-    nvvk::Buffer matIndexBuffer;  // Device buffer of array of 'Wavefront material'
-  };
 
-  struct ObjInstance
-  {
-    nvmath::mat4f transform;    // Matrix of the instance
-    uint32_t      objIndex{0};  // Model index reference
-  };
-
+  nvh::GltfScene m_gltfScene;
+  nvvk::Buffer   m_vertexBuffer;
+  nvvk::Buffer   m_normalBuffer;
+  nvvk::Buffer   m_uvBuffer;
+  nvvk::Buffer   m_indexBuffer;
+  nvvk::Buffer   m_materialBuffer;
+  nvvk::Buffer   m_primInfo;
+  nvvk::Buffer   m_sceneDesc;
 
   // Information pushed at each draw call
   PushConstantRaster m_pcRaster{
-      {1},                // Identity matrix
-      {10.f, 15.f, 8.f},  // light position
-      0,                  // instance Id
-      100.f,              // light intensity
-      0                   // light type
+      {1},               // Identity matrix
+      {0.f, 4.5f, 0.f},  // light position
+      0,                 // instance Id
+      10.f,              // light intensity
+      0,                 // light type
+      0                  // material id
   };
-
-  // Array of objects and instances in the scene
-  std::vector<ObjModel>    m_objModel;   // Model on host
-  std::vector<ObjDesc>     m_objDesc;    // Model description for device access
-  std::vector<ObjInstance> m_instances;  // Scene model instances
-
 
   // Graphic pipeline
   VkPipelineLayout            m_pipelineLayout;
@@ -91,34 +82,12 @@ public:
   VkDescriptorSetLayout       m_descSetLayout;
   VkDescriptorSet             m_descSet;
 
-  nvvk::Buffer m_bGlobals;  // Device-Host of the camera matrices
-  nvvk::Buffer m_bObjDesc;  // Device buffer of the OBJ descriptions
-
+  nvvk::Buffer               m_bGlobals;  // Device-Host of the camera matrices
   std::vector<nvvk::Texture> m_textures;  // vector of all textures of the scene
-
 
   nvvk::ResourceAllocatorDma m_alloc;  // Allocator for buffer, images, acceleration structures
   nvvk::DebugUtil            m_debug;  // Utility to name objects
 
-  VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_rtProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
-  nvvk::RaytracingBuilderKHR m_rtBuilder;
-  nvvk::DescriptorSetBindings m_rtDescSetLayoutBind;
-  VkDescriptorPool            m_rtDescPool;
-  VkDescriptorSetLayout       m_rtDescSetLayout;
-  VkDescriptorSet             m_rtDescSet;
-
-  void initRayTracing();
-  auto objectToVkGeometryKHR(const ObjModel& model);
-  void createBottomLevelAS();
-  void createTopLevelAS();
-  void createRtDescriptorSet();
-  void updateRtDescriptorSet();
-  void createRtPipeline();
-  void raytrace(const VkCommandBuffer& cmdBuf, const nvmath::vec4f& clearColor);
-
-  std::vector<VkRayTracingShaderGroupCreateInfoKHR> m_rtShaderGroups;
-  VkPipelineLayout m_rtPipelineLayout;
-  VkPipeline m_rtPipeline;
 
   // #Post - Draw the rendered image on a quad using a tonemapper
   void createOffscreenRender();
@@ -140,13 +109,28 @@ public:
   VkFormat                    m_offscreenColorFormat{VK_FORMAT_R32G32B32A32_SFLOAT};
   VkFormat                    m_offscreenDepthFormat{VK_FORMAT_X8_D24_UNORM_PACK32};
 
-  void createRtShaderBindingTable();
+  // #VKRay
+  void initRayTracing();
+  auto primitiveToVkGeometry(const nvh::GltfPrimMesh& prim);
+  void createBottomLevelAS();
+  void createTopLevelAS();
+  void createRtDescriptorSet();
+  void updateRtDescriptorSet();
+  void createRtPipeline();
+  void raytrace(const VkCommandBuffer& cmdBuf, const nvmath::vec4f& clearColor);
+  void updateFrame();
+  void resetFrame();
 
-  nvvk::Buffer                    m_rtSBTBuffer;
-  VkStridedDeviceAddressRegionKHR m_rgenRegion{};
-  VkStridedDeviceAddressRegionKHR m_missRegion{};
-  VkStridedDeviceAddressRegionKHR m_hitRegion{};
-  VkStridedDeviceAddressRegionKHR m_callRegion{};
+  VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_rtProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+  nvvk::RaytracingBuilderKHR                        m_rtBuilder;
+  nvvk::DescriptorSetBindings                       m_rtDescSetLayoutBind;
+  VkDescriptorPool                                  m_rtDescPool;
+  VkDescriptorSetLayout                             m_rtDescSetLayout;
+  VkDescriptorSet                                   m_rtDescSet;
+  std::vector<VkRayTracingShaderGroupCreateInfoKHR> m_rtShaderGroups;
+  VkPipelineLayout                                  m_rtPipelineLayout;
+  VkPipeline                                        m_rtPipeline;
+  nvvk::SBTWrapper                                  m_sbtWrapper;
 
   PushConstantRay m_pcRay{};
 };

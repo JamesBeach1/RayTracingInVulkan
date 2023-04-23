@@ -29,6 +29,7 @@
 
 #include "gltf.glsl"
 #include "raycommon.glsl"
+#include "sampling.glsl"
 #include "host_device.h"
 
 hitAttributeEXT vec2 attribs;
@@ -40,28 +41,18 @@ layout(location = 1) rayPayloadEXT bool isShadowed;
 layout(set = 0, binding = 0 ) uniform accelerationStructureEXT topLevelAS;
 layout(set = 0, binding = 2) readonly buffer _InstanceInfo {PrimMeshInfo primInfo[];};
 
-//layout(set = 1, binding = B_MATERIALS) readonly buffer _MaterialBuffer {GltfShadeMaterial materials[];};
 
-
-layout(buffer_reference, scalar) readonly buffer Vertices  { vec3 v[]; };
-layout(buffer_reference, scalar) readonly buffer Indices   { uint i[]; };
-layout(buffer_reference, scalar) readonly buffer Normals   { vec3 n[]; };
-layout(buffer_reference, scalar) readonly buffer TexCoords { vec2 t[]; };
+layout(buffer_reference, scalar) readonly buffer Vertices  { vec3  v[]; };
+layout(buffer_reference, scalar) readonly buffer Indices   { ivec3 i[]; };
+layout(buffer_reference, scalar) readonly buffer Normals   { vec3  n[]; };
+layout(buffer_reference, scalar) readonly buffer TexCoords { vec2  t[]; };
 layout(buffer_reference, scalar) readonly buffer Materials { GltfShadeMaterial m[]; };
 
 layout(set = 1, binding = eSceneDesc ) readonly buffer SceneDesc_ { SceneDesc sceneDesc; };
 layout(set = 1, binding = eTextures) uniform sampler2D texturesMap[]; // all textures
 
+layout(push_constant) uniform _PushConstantRay { PushConstantRay pcRay; };
 // clang-format on
-
-layout(push_constant) uniform Constants
-{
-  vec4  clearColor;
-  vec3  lightPosition;
-  float lightIntensity;
-  int   lightType;
-}
-pushC;
 
 
 void main()
@@ -70,7 +61,7 @@ void main()
   PrimMeshInfo pinfo = primInfo[gl_InstanceCustomIndexEXT];
 
   // Getting the 'first index' for this mesh (offset of the mesh + offset of the triangle)
-  uint indexOffset  = pinfo.indexOffset + (3 * gl_PrimitiveID);
+  uint indexOffset  = (pinfo.indexOffset / 3) + gl_PrimitiveID;
   uint vertexOffset = pinfo.vertexOffset;           // Vertex offset as defined in glTF
   uint matIndex     = max(0, pinfo.materialIndex);  // material of primitive mesh
 
@@ -81,9 +72,8 @@ void main()
   TexCoords texCoords = TexCoords(sceneDesc.uvAddress);
   Materials materials = Materials(sceneDesc.materialAddress);
 
-
   // Getting the 3 indices of the triangle (local)
-  ivec3 triangleIndex = ivec3(indices.i[indexOffset + 0], indices.i[indexOffset + 1], indices.i[indexOffset + 2]);
+  ivec3 triangleIndex = indices.i[indexOffset];
   triangleIndex += ivec3(vertexOffset);  // (global)
 
   const vec3 barycentrics = vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
@@ -109,69 +99,58 @@ void main()
   const vec2 uv2       = texCoords.t[triangleIndex.z];
   const vec2 texcoord0 = uv0 * barycentrics.x + uv1 * barycentrics.y + uv2 * barycentrics.z;
 
-  // Vector toward the light
-  vec3  L;
-  float lightIntensity = pushC.lightIntensity;
-  float lightDistance  = 100000.0;
-  // Point light
-  if(pushC.lightType == 0)
-  {
-    vec3 lDir      = pushC.lightPosition - world_position;
-    lightDistance  = length(lDir);
-    lightIntensity = pushC.lightIntensity / (lightDistance * lightDistance);
-    L              = normalize(lDir);
-  }
-  else  // Directional light
-  {
-    L = normalize(pushC.lightPosition - vec3(0));
-  }
-
+  // https://en.wikipedia.org/wiki/Path_tracing
   // Material of the object
-  GltfShadeMaterial mat = materials.m[matIndex];
+  GltfShadeMaterial mat       = materials.m[matIndex];
+  vec3              emittance = mat.emissiveFactor;
 
-  // Diffuse
-  vec3 diffuse = computeDiffuse(mat, L, world_normal);
+  // Pick a random direction from here and keep going.
+  vec3 tangent, bitangent;
+  createCoordinateSystem(world_normal, tangent, bitangent);
+  vec3 rayOrigin    = world_position;
+  vec3 rayDirection = samplingHemisphere(prd.seed, tangent, bitangent, world_normal);
+
+  // Probability of the newRay (cosine distributed)
+  const float p = 1 / M_PI;
+
+  // Compute the BRDF for this ray (assuming Lambertian reflection)
+  float cos_theta = dot(rayDirection, world_normal);
+  vec3  albedo    = mat.pbrBaseColorFactor.xyz;
   if(mat.pbrBaseColorTexture > -1)
   {
     uint txtId = mat.pbrBaseColorTexture;
-    diffuse *= texture(texturesMap[nonuniformEXT(txtId)], texcoord0).xyz;
+    albedo *= texture(texturesMap[nonuniformEXT(txtId)], texcoord0).xyz;
   }
+  vec3 BRDF = albedo / M_PI;
 
-  vec3  specular    = vec3(0);
-  float attenuation = 1;
+  prd.rayOrigin    = rayOrigin;
+  prd.rayDirection = rayDirection;
+  prd.hitValue     = emittance;
+  prd.weight       = BRDF * cos_theta / p;
+  return;
 
-  // Tracing shadow ray only if the light is visible from the surface
-  if(dot(world_normal, L) > 0)
+  // Recursively trace reflected light sources.
+  if(prd.depth < 10)
   {
-    float tMin   = 0.001;
-    float tMax   = lightDistance;
-    vec3  origin = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
-    vec3  rayDir = L;
-    uint  flags  = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
-    isShadowed   = true;
-    traceRayEXT(topLevelAS,  // acceleration structure
-                flags,       // rayFlags
-                0xFF,        // cullMask
-                0,           // sbtRecordOffset
-                0,           // sbtRecordStride
-                1,           // missIndex
-                origin,      // ray origin
-                tMin,        // ray min range
-                rayDir,      // ray direction
-                tMax,        // ray max range
-                1            // payload (location = 1)
+    prd.depth++;
+    float tMin  = 0.001;
+    float tMax  = 100000000.0;
+    uint  flags = gl_RayFlagsOpaqueEXT;
+    traceRayEXT(topLevelAS,    // acceleration structure
+                flags,         // rayFlags
+                0xFF,          // cullMask
+                0,             // sbtRecordOffset
+                0,             // sbtRecordStride
+                0,             // missIndex
+                rayOrigin,     // ray origin
+                tMin,          // ray min range
+                rayDirection,  // ray direction
+                tMax,          // ray max range
+                0              // payload (location = 0)
     );
-
-    if(isShadowed)
-    {
-      attenuation = 0.3;
-    }
-    else
-    {
-      // Specular
-      specular = computeSpecular(mat, gl_WorldRayDirectionEXT, L, world_normal);
-    }
   }
+  vec3 incoming = prd.hitValue;
 
-  prd.hitValue = vec3(lightIntensity * attenuation * (diffuse + specular));
+  // Apply the Rendering Equation here.
+  prd.hitValue = emittance + (BRDF * incoming * cos_theta / p);
 }
