@@ -159,8 +159,10 @@ int main(int argc, char** argv)
   app.initGUI(0);  // Using sub-pass 0
 
   // Creation of the example
-  app.loadScene(nvh::findFile("media/scenes/cornellBox.gltf", defaultSearchPaths, true));
-
+  app.loadScene(nvh::findFile("media/scenes/cornellBox2.gltf", defaultSearchPaths, true));
+  //app.loadScene(nvh::findFile("media/scenes/venusBox.gltf", defaultSearchPaths, true));
+  //app.loadScene(nvh::findFile("media/scenes/sofoklesBox.gltf", defaultSearchPaths, true));
+  //app.loadScene(nvh::findFile("media/scenes/skeletonBox.gltf", defaultSearchPaths, true));
 
   app.createOffscreenRender();
   app.createDescriptorSetLayout();
